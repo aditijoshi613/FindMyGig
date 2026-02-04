@@ -1,4 +1,3 @@
 ## Demo
 
-▶️ Watch the 1-minute demo  
-assets/demo.mp4
+[![FindMyGig Demo](assets/demo_preview.png)](assets/demo.mp4)
