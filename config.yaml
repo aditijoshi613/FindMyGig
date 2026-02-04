@@ -1,0 +1,8 @@
+# Live music agent config
+# API keys: set OPENAI_API_KEY and SERPAPI_API_KEY in .env (not committed)
+
+agent:
+  model: gpt-3.5-turbo
+  temperature: 0.5
+
+# Optional: add more sections later
