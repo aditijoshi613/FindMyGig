@@ -1,3 +1,5 @@
 ## Demo
 
-[![FindMyGig Demo](assets/demo_preview.png)](assets/demo.mp4)
+▶️ Watch demo (inline player)  
+
+https://github.com/user-attachments/assets/84ea1205-f4de-4495-b98c-e05d89f3a4ed
