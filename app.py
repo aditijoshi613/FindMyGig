@@ -270,7 +270,24 @@ else:
             redirect_uri=REDIRECT_URI,
         )
         auth_url = spotify_oauth.get_authorize_url()
-        st.link_button("Connect Spotify", auth_url, type="secondary")
+        # Open Spotify auth in the same window; redirects back after auth
+        st.markdown(
+            f'<a href="{auth_url}" target="_self" '
+            f'style="display:inline-flex;align-items:center;gap:0.5rem;padding:0.5rem 1.25rem;'
+            f'border-radius:10px;background:#1DB954;border:none;color:#fff;cursor:pointer;'
+            f'text-decoration:none;font-family:Outfit,sans-serif;font-weight:600;'
+            f'font-size:0.9rem;">'
+            f'<svg width="21" height="21" viewBox="0 0 24 24" fill="#fff">'
+            f'<path d="M12 0C5.4 0 0 5.4 0 12s5.4 12 12 12 12-5.4 12-12S18.6 0 12 0zm5.5 '
+            f'17.3c-.2.3-.6.4-.9.2-2.5-1.5-5.7-1.9-9.4-1-.4.1-.7-.1-.8-.5-.1-.4.1-.7.5-.8 '
+            f'4.1-.9 7.6-.5 10.4 1.2.3.2.4.6.2.9zm1.5-3.3c-.3.4-.8.5-1.2.3-2.9-1.8-7.2-2.3'
+            f'-10.6-1.3-.4.1-.9-.1-1-.6-.1-.4.1-.9.6-1 3.9-1.2 8.8-.6 12.1 1.5.3.2.4.7.1 '
+            f'1.1zm.1-3.4C15.7 8.6 9.1 8.4 5.3 9.5c-.5.2-1.1-.2-1.2-.7-.2-.5.2-1.1.7-1.2 '
+            f'4.4-1.3 11.6-1.1 16.2 1.5.5.3.6.9.4 1.4-.3.4-.9.6-1.3.3z"/>'
+            f'</svg>'
+            f'Connect Spotify</a>',
+            unsafe_allow_html=True,
+        )
     else:
         st.caption("Set SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET in .env to connect.")
 
