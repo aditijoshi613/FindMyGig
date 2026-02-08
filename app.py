@@ -1,6 +1,9 @@
 """Streamlit UI for the live music recommendation agent."""
 import html
+import os
 import re
+
+import httpx
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -9,6 +12,7 @@ import streamlit as st
 from langchain_core.messages import HumanMessage
 
 from src.graph import build_agent
+from src.tools.spotify import fetch_user_music_profile, init_spotify_oauth
 
 # Keys we expect from the LLM for each event (order preserved for display)
 EVENT_KEYS = ["Title", "Venue", "Time", "Artists", "Description"]
@@ -46,7 +50,12 @@ Description: [short description or why you recommend it]
 """
 
 
-def build_prompt(location: str, genres: list[str], time_label: str) -> str:
+def build_prompt(
+    location: str,
+    genres: list[str],
+    time_label: str,
+    music_context: list[str] | None = None,
+) -> str:
     time_phrase = TIME_RANGE_OPTIONS.get(time_label, "in the next 2 weeks")
     if not genres:
         base = f"I'm in {location}. What gigs do you recommend {time_phrase}?"
@@ -55,6 +64,12 @@ def build_prompt(location: str, genres: list[str], time_label: str) -> str:
         base = (
             f"I'm in {location} and love {vibe} vibes. "
             f"What gigs do you recommend {time_phrase}?"
+        )
+    if music_context:
+        base += (
+            "\n\n"
+            + "User's music taste (use this to personalize recommendations):\n"
+            + "\n".join(music_context)
         )
     return base + "\n\n" + FORMAT_INSTRUCTION
 
@@ -128,6 +143,44 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+# ---- Spotify OAuth ----
+REDIRECT_URI = "http://127.0.0.1:8501"
+if "spotify_access_token" not in st.session_state:
+    st.session_state["spotify_access_token"] = None
+
+# Handle OAuth callback (user returning from Spotify)
+query_params = st.query_params
+if "code" in query_params:
+    client_id = os.environ.get("SPOTIFY_CLIENT_ID")
+    client_secret = os.environ.get("SPOTIFY_CLIENT_SECRET")
+    code = query_params["code"]
+    if client_id and client_secret and code:
+        try:
+            # Exchange auth code for token directly via HTTP (avoids spotipy's
+            # interactive get_access_token which can hang in Streamlit)
+            resp = httpx.post(
+                "https://accounts.spotify.com/api/token",
+                data={
+                    "grant_type": "authorization_code",
+                    "code": code,
+                    "redirect_uri": REDIRECT_URI,
+                    "client_id": client_id,
+                    "client_secret": client_secret,
+                },
+                timeout=15.0,
+            )
+            resp.raise_for_status()
+            token_info = resp.json()
+            st.session_state["spotify_access_token"] = token_info.get(
+                "access_token"
+            )
+            st.session_state["spotify_refresh_token"] = token_info.get(
+                "refresh_token"
+            )
+        except Exception as e:
+            st.error(f"Spotify auth failed: {e}")
+    st.query_params.clear()
+
 # ---- Centered form ----
 if "genres" not in st.session_state:
     st.session_state["genres"] = set()
@@ -189,6 +242,38 @@ for col, label in zip(time_cols, TIME_RANGE_OPTIONS):
         )
 time_range = st.session_state["time_range"]
 
+# Connect Spotify
+st.markdown('<p class="section-label">Connect your music</p>', unsafe_allow_html=True)
+if st.session_state.get("spotify_access_token"):
+    st.success("Spotify connected. Your taste will personalize recommendations.")
+    # Show music profile
+    try:
+        if "spotify_profile" not in st.session_state or st.button("Refresh profile", key="refresh_profile"):
+            st.session_state["spotify_profile"] = fetch_user_music_profile(
+                st.session_state["spotify_access_token"]
+            )
+        profile = st.session_state["spotify_profile"]
+        with st.expander("Your Spotify profile", expanded=True):
+            st.markdown("**Top Artists:** " + (", ".join(profile.top_artists[:10]) if profile.top_artists else "_No data yet_"))
+            st.markdown("**Top Genres:** " + (", ".join(profile.top_genres[:8]) if profile.top_genres else "_No data yet_"))
+            st.markdown("**Top Tracks:** " + (", ".join(profile.top_tracks[:10]) if profile.top_tracks else "_No data yet_"))
+            st.markdown("**Recently Played:** " + (", ".join(profile.recently_played[:5]) if profile.recently_played else "_No data yet_"))
+    except Exception as e:
+        st.caption(f"Could not load profile: {e}")
+else:
+    client_id = os.environ.get("SPOTIFY_CLIENT_ID")
+    client_secret = os.environ.get("SPOTIFY_CLIENT_SECRET")
+    if client_id and client_secret:
+        spotify_oauth = init_spotify_oauth(
+            client_id=client_id,
+            client_secret=client_secret,
+            redirect_uri=REDIRECT_URI,
+        )
+        auth_url = spotify_oauth.get_authorize_url()
+        st.link_button("Connect Spotify", auth_url, type="secondary")
+    else:
+        st.caption("Set SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET in .env to connect.")
+
 st.markdown("<br>", unsafe_allow_html=True)
 
 # Main CTA
@@ -202,7 +287,25 @@ if recommend:
     if not location or not location.strip():
         st.warning("Please enter a location.")
     else:
-        prompt = build_prompt(location.strip(), selected_genres, time_range)
+        # Fetch Spotify music profile if connected
+        music_context: list[str] = []
+        if st.session_state.get("spotify_access_token"):
+            try:
+                profile = fetch_user_music_profile(
+                    st.session_state["spotify_access_token"]
+                )
+                music_context.append(profile.to_context_string())
+            except Exception as e:
+                music_context.append(f"Spotify data unavailable: {e}")
+
+        prompt = build_prompt(
+            location.strip(), selected_genres, time_range, music_context
+        )
+        print("=" * 60)
+        print("USER PROMPT:")
+        print("=" * 60)
+        print(prompt)
+        print("=" * 60)
         with st.spinner("Finding gigs for you…"):
             try:
                 agent = build_agent()
@@ -211,7 +314,15 @@ if recommend:
                     if "agent" in chunk:
                         for m in chunk["agent"]["messages"]:
                             if hasattr(m, "content") and m.content:
-                                full_content.append(m.content)
+                                content = m.content
+                                # Anthropic returns content as a list of blocks
+                                if isinstance(content, list):
+                                    content = "".join(
+                                        block.get("text", "") if isinstance(block, dict) else str(block)
+                                        for block in content
+                                    )
+                                if content:
+                                    full_content.append(content)
                 if full_content:
                     text = "\n\n".join(full_content)
                     events = parse_events(text)
