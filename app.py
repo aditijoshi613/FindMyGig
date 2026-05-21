@@ -17,6 +17,37 @@ from src.tools.spotify import fetch_user_music_profile, init_spotify_oauth
 # Keys we expect from the LLM for each event (order preserved for display)
 EVENT_KEYS = ["Title", "Venue", "Time", "Artists", "Description"]
 
+SPOTIFY_REDIRECT_URI_DEFAULT = "http://127.0.0.1:8501"
+
+
+def _spotify_loopback_host(host: str) -> str:
+    """Spotify rejects localhost; loopback must use 127.0.0.1 (or [::1])."""
+    if ":" in host:
+        hostname, port = host.rsplit(":", 1)
+    else:
+        hostname, port = host, "8501"
+    if hostname.lower() in ("localhost", "127.0.0.1", "::1", "[::1]"):
+        return f"127.0.0.1:{port}"
+    return host
+
+
+def get_spotify_redirect_uri() -> str:
+    """Must exactly match a Redirect URI in the Spotify Developer Dashboard."""
+    if uri := os.environ.get("SPOTIFY_REDIRECT_URI", "").strip():
+        return uri.rstrip("/")
+    try:
+        host = (
+            st.context.headers.get("Host")
+            or st.context.headers.get("host")
+            or ""
+        ).strip()
+        if host:
+            return f"http://{_spotify_loopback_host(host)}".rstrip("/")
+    except Exception:
+        pass
+    return SPOTIFY_REDIRECT_URI_DEFAULT
+
+
 GENRE_OPTIONS = [
     "Indie",
     "Acoustic",
@@ -144,7 +175,7 @@ st.markdown(
 )
 
 # ---- Spotify OAuth ----
-REDIRECT_URI = "http://127.0.0.1:8501"
+REDIRECT_URI = get_spotify_redirect_uri()
 if "spotify_access_token" not in st.session_state:
     st.session_state["spotify_access_token"] = None
 
@@ -287,6 +318,11 @@ else:
             f'</svg>'
             f'Connect Spotify</a>',
             unsafe_allow_html=True,
+        )
+        st.caption(
+            f"Register this exact Redirect URI in your [Spotify app](https://developer.spotify.com/dashboard) "
+            f"(Settings → Redirect URIs): `{REDIRECT_URI}`. "
+            "Spotify does not allow `localhost` — use `127.0.0.1` only."
         )
     else:
         st.caption("Set SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET in .env to connect.")

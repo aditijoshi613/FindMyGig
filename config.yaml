@@ -1,6 +1,7 @@
 # Live music agent config
 # API keys: set in .env (not committed):
 #   OPENAI_API_KEY, SERPAPI_API_KEY, SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET
+#   SPOTIFY_REDIRECT_URI (optional; must match Spotify Dashboard, e.g. http://127.0.0.1:8501)
 
 agent:
   # model is auto-selected based on provider (set LLM_MODEL in .env to override)
