@@ -9,15 +9,20 @@ import yaml
 
 @dataclass(frozen=True)
 class AgentConfig:
-    """LLM and agent settings. Loaded from YAML; API key from env."""
+    """LLM and agent settings. Loaded from YAML; API key from env.
 
+    Supports both OpenAI and Anthropic (Claude). The provider is chosen
+    automatically based on which API key is set, or can be forced via the
+    ``LLM_PROVIDER`` env var (``openai`` or ``anthropic``).
+    """
+
+    provider: str  # "openai" or "anthropic"
     model: str
     temperature: float
     api_key: Optional[str] = None
 
     @classmethod
     def from_yaml(cls, path: Optional[Path] = None) -> "AgentConfig":
-        """Load agent config from config.yaml. Env overrides: OPENAI_MODEL, OPENAI_TEMPERATURE, OPENAI_API_KEY."""
         if path is None:
             path = Path(__file__).resolve().parent.parent / "config.yaml"
         raw: dict[str, Any] = {}
@@ -25,13 +30,29 @@ class AgentConfig:
             with open(path) as f:
                 raw = yaml.safe_load(f) or {}
         agent = raw.get("agent") or {}
+
+        # Determine provider: explicit env var > whichever key is set
+        explicit_provider = os.environ.get("LLM_PROVIDER", "").lower()
+        openai_key = os.environ.get("OPENAI_API_KEY")
+        anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
+
+        if explicit_provider == "anthropic" or (not explicit_provider and anthropic_key and not openai_key):
+            provider = "anthropic"
+            default_model = "claude-sonnet-4-20250514"
+            api_key = anthropic_key
+        else:
+            provider = "openai"
+            default_model = "gpt-4o"
+            api_key = openai_key
+
         return cls(
-            model=os.environ.get("OPENAI_MODEL") or agent.get("model", "gpt-4o"),
+            provider=provider,
+            model=os.environ.get("LLM_MODEL") or agent.get("model") or default_model,
             temperature=float(
-                os.environ.get("OPENAI_TEMPERATURE")
+                os.environ.get("LLM_TEMPERATURE")
                 or agent.get("temperature", 0)
             ),
-            api_key=os.environ.get("OPENAI_API_KEY") or None,
+            api_key=api_key,
         )
 
     @classmethod

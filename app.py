@@ -1,6 +1,9 @@
 """Streamlit UI for the live music recommendation agent."""
 import html
+import os
 import re
+
+import httpx
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -9,9 +12,41 @@ import streamlit as st
 from langchain_core.messages import HumanMessage
 
 from src.graph import build_agent
+from src.tools.spotify import fetch_user_music_profile, init_spotify_oauth
 
 # Keys we expect from the LLM for each event (order preserved for display)
 EVENT_KEYS = ["Title", "Venue", "Time", "Artists", "Description"]
+
+SPOTIFY_REDIRECT_URI_DEFAULT = "http://127.0.0.1:8501"
+
+
+def _spotify_loopback_host(host: str) -> str:
+    """Spotify rejects localhost; loopback must use 127.0.0.1 (or [::1])."""
+    if ":" in host:
+        hostname, port = host.rsplit(":", 1)
+    else:
+        hostname, port = host, "8501"
+    if hostname.lower() in ("localhost", "127.0.0.1", "::1", "[::1]"):
+        return f"127.0.0.1:{port}"
+    return host
+
+
+def get_spotify_redirect_uri() -> str:
+    """Must exactly match a Redirect URI in the Spotify Developer Dashboard."""
+    if uri := os.environ.get("SPOTIFY_REDIRECT_URI", "").strip():
+        return uri.rstrip("/")
+    try:
+        host = (
+            st.context.headers.get("Host")
+            or st.context.headers.get("host")
+            or ""
+        ).strip()
+        if host:
+            return f"http://{_spotify_loopback_host(host)}".rstrip("/")
+    except Exception:
+        pass
+    return SPOTIFY_REDIRECT_URI_DEFAULT
+
 
 GENRE_OPTIONS = [
     "Indie",
@@ -46,7 +81,12 @@ Description: [short description or why you recommend it]
 """
 
 
-def build_prompt(location: str, genres: list[str], time_label: str) -> str:
+def build_prompt(
+    location: str,
+    genres: list[str],
+    time_label: str,
+    music_context: list[str] | None = None,
+) -> str:
     time_phrase = TIME_RANGE_OPTIONS.get(time_label, "in the next 2 weeks")
     if not genres:
         base = f"I'm in {location}. What gigs do you recommend {time_phrase}?"
@@ -55,6 +95,12 @@ def build_prompt(location: str, genres: list[str], time_label: str) -> str:
         base = (
             f"I'm in {location} and love {vibe} vibes. "
             f"What gigs do you recommend {time_phrase}?"
+        )
+    if music_context:
+        base += (
+            "\n\n"
+            + "User's music taste (use this to personalize recommendations):\n"
+            + "\n".join(music_context)
         )
     return base + "\n\n" + FORMAT_INSTRUCTION
 
@@ -128,6 +174,44 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+# ---- Spotify OAuth ----
+REDIRECT_URI = get_spotify_redirect_uri()
+if "spotify_access_token" not in st.session_state:
+    st.session_state["spotify_access_token"] = None
+
+# Handle OAuth callback (user returning from Spotify)
+query_params = st.query_params
+if "code" in query_params:
+    client_id = os.environ.get("SPOTIFY_CLIENT_ID")
+    client_secret = os.environ.get("SPOTIFY_CLIENT_SECRET")
+    code = query_params["code"]
+    if client_id and client_secret and code:
+        try:
+            # Exchange auth code for token directly via HTTP (avoids spotipy's
+            # interactive get_access_token which can hang in Streamlit)
+            resp = httpx.post(
+                "https://accounts.spotify.com/api/token",
+                data={
+                    "grant_type": "authorization_code",
+                    "code": code,
+                    "redirect_uri": REDIRECT_URI,
+                    "client_id": client_id,
+                    "client_secret": client_secret,
+                },
+                timeout=15.0,
+            )
+            resp.raise_for_status()
+            token_info = resp.json()
+            st.session_state["spotify_access_token"] = token_info.get(
+                "access_token"
+            )
+            st.session_state["spotify_refresh_token"] = token_info.get(
+                "refresh_token"
+            )
+        except Exception as e:
+            st.error(f"Spotify auth failed: {e}")
+    st.query_params.clear()
+
 # ---- Centered form ----
 if "genres" not in st.session_state:
     st.session_state["genres"] = set()
@@ -189,6 +273,60 @@ for col, label in zip(time_cols, TIME_RANGE_OPTIONS):
         )
 time_range = st.session_state["time_range"]
 
+# Connect Spotify
+st.markdown('<p class="section-label">Connect your music</p>', unsafe_allow_html=True)
+if st.session_state.get("spotify_access_token"):
+    st.success("Spotify connected. Your taste will personalize recommendations.")
+    # Show music profile
+    try:
+        if "spotify_profile" not in st.session_state or st.button("Refresh profile", key="refresh_profile"):
+            st.session_state["spotify_profile"] = fetch_user_music_profile(
+                st.session_state["spotify_access_token"]
+            )
+        profile = st.session_state["spotify_profile"]
+        with st.expander("Your Spotify profile", expanded=True):
+            st.markdown("**Top Artists:** " + (", ".join(profile.top_artists[:10]) if profile.top_artists else "_No data yet_"))
+            st.markdown("**Top Genres:** " + (", ".join(profile.top_genres[:8]) if profile.top_genres else "_No data yet_"))
+            st.markdown("**Top Tracks:** " + (", ".join(profile.top_tracks[:10]) if profile.top_tracks else "_No data yet_"))
+            st.markdown("**Recently Played:** " + (", ".join(profile.recently_played[:5]) if profile.recently_played else "_No data yet_"))
+    except Exception as e:
+        st.caption(f"Could not load profile: {e}")
+else:
+    client_id = os.environ.get("SPOTIFY_CLIENT_ID")
+    client_secret = os.environ.get("SPOTIFY_CLIENT_SECRET")
+    if client_id and client_secret:
+        spotify_oauth = init_spotify_oauth(
+            client_id=client_id,
+            client_secret=client_secret,
+            redirect_uri=REDIRECT_URI,
+        )
+        auth_url = spotify_oauth.get_authorize_url()
+        # Open Spotify auth in the same window; redirects back after auth
+        st.markdown(
+            f'<a href="{auth_url}" target="_self" '
+            f'style="display:inline-flex;align-items:center;gap:0.5rem;padding:0.5rem 1.25rem;'
+            f'border-radius:10px;background:#1DB954;border:none;color:#fff;cursor:pointer;'
+            f'text-decoration:none;font-family:Outfit,sans-serif;font-weight:600;'
+            f'font-size:0.9rem;">'
+            f'<svg width="21" height="21" viewBox="0 0 24 24" fill="#fff">'
+            f'<path d="M12 0C5.4 0 0 5.4 0 12s5.4 12 12 12 12-5.4 12-12S18.6 0 12 0zm5.5 '
+            f'17.3c-.2.3-.6.4-.9.2-2.5-1.5-5.7-1.9-9.4-1-.4.1-.7-.1-.8-.5-.1-.4.1-.7.5-.8 '
+            f'4.1-.9 7.6-.5 10.4 1.2.3.2.4.6.2.9zm1.5-3.3c-.3.4-.8.5-1.2.3-2.9-1.8-7.2-2.3'
+            f'-10.6-1.3-.4.1-.9-.1-1-.6-.1-.4.1-.9.6-1 3.9-1.2 8.8-.6 12.1 1.5.3.2.4.7.1 '
+            f'1.1zm.1-3.4C15.7 8.6 9.1 8.4 5.3 9.5c-.5.2-1.1-.2-1.2-.7-.2-.5.2-1.1.7-1.2 '
+            f'4.4-1.3 11.6-1.1 16.2 1.5.5.3.6.9.4 1.4-.3.4-.9.6-1.3.3z"/>'
+            f'</svg>'
+            f'Connect Spotify</a>',
+            unsafe_allow_html=True,
+        )
+        st.caption(
+            f"Register this exact Redirect URI in your [Spotify app](https://developer.spotify.com/dashboard) "
+            f"(Settings → Redirect URIs): `{REDIRECT_URI}`. "
+            "Spotify does not allow `localhost` — use `127.0.0.1` only."
+        )
+    else:
+        st.caption("Set SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET in .env to connect.")
+
 st.markdown("<br>", unsafe_allow_html=True)
 
 # Main CTA
@@ -202,7 +340,25 @@ if recommend:
     if not location or not location.strip():
         st.warning("Please enter a location.")
     else:
-        prompt = build_prompt(location.strip(), selected_genres, time_range)
+        # Fetch Spotify music profile if connected
+        music_context: list[str] = []
+        if st.session_state.get("spotify_access_token"):
+            try:
+                profile = fetch_user_music_profile(
+                    st.session_state["spotify_access_token"]
+                )
+                music_context.append(profile.to_context_string())
+            except Exception as e:
+                music_context.append(f"Spotify data unavailable: {e}")
+
+        prompt = build_prompt(
+            location.strip(), selected_genres, time_range, music_context
+        )
+        print("=" * 60)
+        print("USER PROMPT:")
+        print("=" * 60)
+        print(prompt)
+        print("=" * 60)
         with st.spinner("Finding gigs for you…"):
             try:
                 agent = build_agent()
@@ -211,7 +367,15 @@ if recommend:
                     if "agent" in chunk:
                         for m in chunk["agent"]["messages"]:
                             if hasattr(m, "content") and m.content:
-                                full_content.append(m.content)
+                                content = m.content
+                                # Anthropic returns content as a list of blocks
+                                if isinstance(content, list):
+                                    content = "".join(
+                                        block.get("text", "") if isinstance(block, dict) else str(block)
+                                        for block in content
+                                    )
+                                if content:
+                                    full_content.append(content)
                 if full_content:
                     text = "\n\n".join(full_content)
                     events = parse_events(text)
