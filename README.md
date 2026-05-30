@@ -27,3 +27,7 @@ SPOTIFY_REDIRECT_URI=http://127.0.0.1:8501
 
 - **`redirect_uri: Not matching configuration`** — The redirect URI in the authorize URL must match the dashboard **exactly**. Use `http://127.0.0.1:8501`, not `localhost`. Confirm the URI is saved in Dashboard → Settings → Redirect URIs, then restart Streamlit after editing `.env`.
 - The UI shows the active redirect URI under the Connect Spotify button for verification.
+
+## License
+
+MIT
